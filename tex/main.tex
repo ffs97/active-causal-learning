@@ -1,0 +1,948 @@
+\documentclass[10pt]{article}
+
+\usepackage{paper}
+
+\setpapertitle{Causal Discovery using Observations and Interventions}
+
+\setauthor{Gurpreet Singh}{gs3056}
+\addauthor{Ritesh Baldva}{rb3447}
+
+\begin{document}
+\makeheader%
+
+\begin{abstract}
+    In this project, we review a number of methods for structure discovery in causal
+    models, particularly graphical causal models consistent with Pearl's notation of
+    structural causal models \citep[SCMs]{pearl2000}. We formally define the problem
+    statement for causal disvoery and present a broad category of papers which deal with
+    this problem.  We also explore the recent advances to better causal discovery using
+    interventaional experiments. Finally, we propose an active causal learning algorithm
+    that uses bayesian optimization to find the optimal intervention to maximize
+    information gain. Our approach is an extension of the active learning algorithm
+    proposed by \citet{kgelgen2019optimal} which computes the information gain over all
+    possible graphs. Our proposal is to sample the graphs using competitive graph
+    sampling algorithms based on MCMC.%
+\end{abstract}
+
+\begin{psection}{Introduction}
+
+    Suppose if we have a thermometer showing the reading of the temperature of your
+    bedroom.  Let $T$ be the random variable representing the actual temperature of the
+    room (which is only observed through the thermometer) and let $T'$ be the reading of
+    the thermometer.  We expect that $T = T'$ assuming the thermometer is not faulty.
+    Now suppose you turn on a space heater which raises the overall temperature of the
+    room, \ie changes the value of $T$. We would expect the reading of the thermometer
+    to change correspondingly as well.  If we take a multitude of such samples,
+    classical statistics would tell us that $T = T'$.  However, suppose through manual
+    intervention, someone changes the reading of your thermometer. This, obviously,
+    would not affect the temperature of the room.  However, classical statistics say
+    that the temperature on the thermometer is supposed to be equal to the temperature
+    of the room. Observations under manual interventions, therefore, are beyond the
+    level of what statistics can deal with.
+
+    This is an example that \citet{pearl2000} used to explain the three levels of
+    causality.  Causality is the field that deals with understanding how the data is
+    generated rather than what data is generated. For the example above, if the
+    statistician knew that the temperature of of the room causes the reading of the
+    thermometer, she wouldn't mistakenly write the equation $T = T'$.  In fact,
+    \citet{pearl1995, pearl2000} introduced the notion of Structural Causal Models and
+    Causal Graphs to tackle the idea of data generation from graphs.
+
+    Disocvering the way data is generated is, however, not an easy task and has many
+    challenges. The most standard way to do this is to use domain knowledge to discover
+    the causal structure. This is not always possible especially in fields like biology
+    where we do not know everything about the effects in play. In this survey, we review
+    some classical methods of causal discovery as well as discuss some of the state of
+    the art methods of discovering the causal structure from observations alone. We also
+    look at some of the recent advances on finding the causal structrue using data
+    obtained from internventional experiments as opposed to only observations.
+
+    The remaining of the survey is structured as follows. In Section
+    \hyperlink{sec:2}{2}, we lay out the background work and discuss the concepts used
+    throughout the survey.  We also formally state the problem of Causal Discovery and
+    some of the assumptions commonly used in most Causal Discovery methods, along with
+    their implications. Then, we review some methods to Causal Discovery which try to
+    find the causal structure using observations only in Section \hyperlink{sec:3}{3}.
+    In Section \hyperlink{sec:4}{4}, we explore some methods to Causal discovery which
+    are based on discovering the causal strucutre either using interventions alone, or
+    using both observations and interventions. Lastly, we propose a method for Active
+    Causal Discovery (defined in Section \hyperlink{sec:2}{2}) which is based on finding
+    an intervention at each timestep for optimal experimention and better discovery. We
+    extend the approach described in \citep{kgelgen2019optimal}, where instead of
+    computing the utility over all graphs, we sample the graphs based on a well defined
+    posterior using graph sampling techniques based on MCMC sampling methods
+    \citep{agrawal2018minimal}.
+
+\end{psection}
+
+\begin{psection}[2]{Background}
+
+    Causal discovery can be characterised as the degree to which one can rule out
+    different plausible explanations for a causal effect. The way to rule out these
+    competing explanations is addressed by the design of the study or experiment like
+    random assignments or sampling bias and the set of assumptions. Before defining the
+    problem of causal discovery, let's establish the standard terminology. We'll use
+    Structural Causal Models (SCM)~\cite{pearl2000} as the framework for exploring the
+    problem. An SCM, represented as a tuple $\langle \vec{V}, \vec{U}, \mathcal{F},
+    \Pr{(\vec{U})} \rangle$, is defined in terms of a \textit{causal graph},
+    \textit{structural equations} and a \textit{probability distribution} over the
+    exogenous variables $(\vec{U})$ in the graph which induces a distribution over the
+    endogenous variables $(\vec{V})$.
+
+    \begin{definition}[Causal Graph~\cite{guo2018survey}]
+        A causal graph $G = (V, E)$ represents casual effects between the variables,
+        where $V$ is the set of variables or nodes, and $E$ is the set of directed edges
+        containing directed edges $V_i \rightarrow V_j$, which represents a direct
+        causal effect of $V_i$ on $V_j$. 
+    \end{definition}
+
+    We now define the terminology for the graphs. A \textit{path} between $X$ and $Y$ in
+    $G$, is a sequence of non-repeating directed edges, oriented in any fashion,
+    starting from $X$ and ending at $Y$. If every edge in the path points in the same
+    direction, we have a \textit{directed path}. Two nodes are \textit{connected} in the
+    graph if there exists a path between the two, otherwise they are
+    \textit{disconnected}. We make use of the standard relationship among the nodes,
+    (e.g. \textit{parents} \textit{children}, \textit{ancestors}, \textit{descendants}).
+    We can also classify the type nodes on a path. A node $X_i$ is a \textit{collider}
+    on path $P$, if $P$ contains $X_{i-1} \rightarrow X_i \leftarrow X_{i+1}$; it's a
+    \textit{mediator} if $P$ contains $X_{i-1} \rightarrow X_i \rightarrow X_{i+1}$ (the
+    other direction too) and it's a \textit{common cause} if $P$ contains $X_{i-1}
+    \leftarrow X_{i} \rightarrow X_{i+1}$.   
+
+    \begin{definition} [Structural Equations~\cite{pearl2000}]
+        Along with the causal graph, a set of equations of the form 
+        \begin{equation}
+            v_i = f_i (pa_i, u_i)
+        \end{equation}
+        form the structural equations, where $pa_i$ denotes the set of parent nodes of
+        the variable $v_i$ in the causal graph and $u_i$ denotes the ``noise'' or
+        disturbances measured in observed variables. 
+    \end{definition}
+
+    \begin{definition}[Causal Discovery~\cite{eberhardt2017introduction}]
+        \textit{Causal discovery} is the inference task from the joint observational
+        distribution $\Pr{(\vec{V})}$ to the causal graph $G$.
+    \end{definition}
+
+    One important feature that we can get from a probability distribution is the set of
+    (conditional) dependences and (conditional) independences. Before analyzing the
+    similarities between distributions and graphs we first establish the the
+    independence relations that exist in the the graph, which is termed as
+    \textit{d-separation}.
+
+    \begin{definition}[d-separation~\cite{pearl2000}]
+        A set $Z$ is said to \textit{d-separate} $X$ from $Y$, if and only if $Z$ blocks
+        every path from a node in $X$ to a node in $Y$, denoted as
+        $\para{X \indep Y \pipe Z}_{G}$. This can happen if a node in $Z$ is a mediator
+        or common cause in the path \textit{p}, or if no node in $Z$ is a collider in
+        the path and no descendants of the collider are in $Z$.   
+    \end{definition}
+
+    The correspondence between the [in]dependences in graphs and [in]dependences in the
+    distribution  is thus established by the Markov condition and Faithful condition.
+    Note, that the faithfulness assumption implies the Markov condition. 
+    \begin{definition}[Faithfulness~\cite{guo2018survey}]
+        Conditional independence between a pair of variables $X_i \perp X_j \vert Z$,
+        can be estimated from the distribution if and only if $Z$ d-separates $X_i$ and
+        $X_j$ in the causal graph $G$. 
+    \end{definition}
+
+    \begin{definition}[Markov Condition~\cite{pearl2000, eberhardt2017introduction}]
+        Every node $X$ in the causal graph is probabilistically independent of all it's
+        non-descendants given it's parents, denoted as
+        $\para{X \indep nd(X) \pipe pa(X)}_{P}$. 
+    \end{definition}
+
+    \begin{definition}[Markov Equivalence Class (MEC)~\cite{glymour2019review}] 
+        The set of causal graphs that have the same d-separation properties and thus,
+        imply the same (conditional) independences are called Markov equivalent and
+        belong to the same Markov Equivalence Class (MEC). 
+    \end{definition}
+
+    Note that a brute force method comes out of the above to do causal discovery, where
+    we generate all possible graphs from the set of variables and check if the
+    corresponding independences hold, given the assumptions to find the MEC of the
+    causal structure. We can see in Figure 2 of
+    Eberhardt~\cite{eberhardt2017introduction} the different equivalence classes for all
+    three node DAGs. Note that, there might be scenarios where there exists only one
+    structure, which leads to a simple solution directly. However, as the number of
+    possible causal graphs within the equivalence class can grow exponentially with the
+    number of vertices, it becomes infeasible to do so, especially with big-data where
+    the number of features (nodes) is high. 
+    
+    Now, given the data for a problem, we have an \textit{observational distribution}
+    over the variables. Note, that from the above structural equations or the causal
+    graph it's possible to transition to the interventional setting. From pearl's
+    \textit{do}-operator, setting the treatment accordingly in the equations, will give
+    us the causal effect on the outcome. Similarly, we can modify the causal graph by
+    removing the edges incoming into the treatment variable to see the remaining active
+    causal pathways in $G$.The distribution of the  outcome variable, obtained by
+    intervening on the treatment is called the \textit{interventional distribution}
+    denoted as $\Pr({y \vert do(x)})$. Note that it is possible to generate the
+    interventional distribution from this new graph too, since the causal graph describe
+    a stochastic way of generating the distribution.
+
+    Due to the above, we also have to take notice of what kind of data is being
+    collected and analysed. In a lot of literature, another assumption of \textit{causal
+    sufficiency} is made. This is to make sure that the problem of \textit{confounding
+    bias} does not arise. However, note that this assumption is very strong and does not
+    manifest in many real life situations. 
+    \begin{definition}[Causal Sufficiency~\cite{eberhardt2017introduction}]
+        Causal Sufficiency implies that there are no unmeasured common causes among any
+        pair of variables of SCM.% 
+    \end{definition}
+
+    \begin{definition}[Confounding Bias~\cite{guo2018survey}]
+        A confounding bias exists for the causal effect $x \rightarrow y$ if and only if
+        the observational conditional probability distribution is not always equivalent
+        to the interventional distribution, i.e $\Pr{(y \vert x)} \neq \Pr{(y \vert \,
+        do(x))}$
+    \end{definition}
+
+    \begin{definition}[Back-door Criterion~\cite{pearl2000}]
+        A set of variables $Z$ satisfies backdoor criterion for an ordered pair of
+        variables $(X_i, X_j)$ in a DAG $G$ if no node in $Z$ is a descendant of $X_i$
+        and $Z$ blocks every path between $X_i$ and $X_j$ with arrow into $X_i$.  
+    \end{definition}
+
+    The confounding bias could exist because of unmeasured common causes, since they
+    open up a back-door path from the outcome to the treatment or there could be
+    selection bias that is present in the data~\cite{bareinboim2014recovering}. One way
+    for causal identification, is to find the set which satisifies the back-door
+    criterion, and do the adjustment by conditioning on that particuluar set. 
+
+    \begin{definition}[Back-door Adjustment~\cite{pearl2000}]
+        If the set of variables $Z$ satisfies the backdoor criterion relative to $(X,
+        Y)$, then we can identify the causal effect of $X$ on $Y$ as,
+        \begin{align*}
+            \prob{y \pipe do(X)} = \sum_{z} \prob{y \pipe x, z} \prob{z}
+        \end{align*}
+    \end{definition}
+
+    The above interventional notation will be useful in the context of active causal
+    learning~\cite{he2008active}. Tong et al~\cite{tong2001active} defines active
+    learning where the learner is able to select instances based off on experiments to
+    guide itself to more accurate models. For causal discovery, one way to think about
+    that is to do interventional experiments. 
+
+    \begin{definition}[Active Causal Discovery~\cite{he2008active}]
+        Active Causal Discovery refers to first finding the Markov equivalence class
+        from the observational distribution and then orienting the edges with the help
+        of interventions, or by using both interventions and observations. 
+    \end{definition}
+
+\end{psection}
+
+\begin{psection}[3]{Causal Discovery using Observations}
+
+    \begin{psubsection}{Constraint Based Causal Discovery}
+        Algorithms which use the conditional independence tests to figure out the Markov
+        equivalence classes of causal structures fall under this category. Note that
+        these algorithms might not always give the complete outputs with directionality
+        on each edge, i.e a graph may be output with an undirected edge which in reality
+        would correspond to a particular orientation. 
+
+        % Do not add citations in sections, latex fuck ho jaata hai kabhi kabhi
+        \begin{pssubsection}{SGS Algorithm}
+            If we take note of all the four assumptions namely, Markov, faithfulness,
+            DAG structure and causal sufficiency, the SGS
+            algorithm~\cite{spirtes2000causation} follows by using an elimination
+            strategy. The algorithm works as follows,
+            \begin{enumerate}
+                \item Consider a complete undirected graph $G$, with edges among all the
+                    $V$ variables. 
+                \item For each set of conditional independences that hold in the
+                    distribution, $X \perp Y \vert Z$, remove the edge connecting  $X$
+                    and $Y$, since there can not be a direct causal effect. 
+                \item For set of three variables $X, Y, Z$, figure out if Y is a
+                    collider by checking for the conditional dependence of $X$ and $Y$
+                    given $Z$. 
+                \item Recursively orient the remaining edges starting with the
+                    neighboring edges of the ones found in the above steps. 
+            \end{enumerate} 
+            Note that the above scenario still has exponential runtime in worst case
+            since the number of edges we need to run tests on is exponential. Also the
+            output in case of non-singleton Markov Equivalence Classes will still be
+            partially identified. 
+        \end{pssubsection}
+
+        \begin{pssubsection}{PC Algorithm}
+            In PC algorithm~\cite{spirtes2000causation} we optimize the edge elimination
+            heuristic for step 2 that we were using before. After starting with the
+            completely undirected graph,
+            \begin{enumerate}
+                \item Eliminate edges for which $X$ and $Y$ are unconditionally
+                    independent.
+                \item For each pair of variables $X, Y$ that are connected with an edge,
+                    and for each variable $Z$ that is still connected to either of them,
+                    eliminate the edge between $X$ and $Y$ if $X \perp Y \vert Z$. 
+                \item For each pair of variables $X, Y$ that are connected with an edge,
+                    and for each pair of variables $T, Z$ that are connected to either
+                    of them, eliminate the edge between $X$ and $Y$ if $X \perp Y \vert
+                    \{T,Z\}$. 
+                \item[{$\vdots$}] 
+            \end{enumerate}
+
+            After the final elimination, we proceed with finding colliders and
+            performing edge orientation. This strategy thus avoid any unnecessary
+            conditional independence tests that we might need to make and would still
+            output the same result as the SGS algorithm.
+            Note that, even more heuristics and wrappers for this PC algorithm  have
+            been designed in the literature. Another heuristic to speed up the edge
+            elimination is that we only need to consider the nodes, that are adjacent to
+            $X$ and $Y$ and not necessarily connected, because of the Markov property,
+            which is referred to as the $PC^{\star}$
+            algorithm~\cite{spirtes2000causation}. They also proposed the Fast Causal
+            Inference algorithm which supports latent confounders under asymptotic
+            correctness.
+
+            Also note that since most conditional independence tests assume gaussian or
+            multinomial distributions, the above model is also restricted in sense of
+            causal effects with arbitrary distributions. Among other variants, Colombo
+            and Maathuis~\cite{colombo2014order} noted that the output of the PC
+            algorithm is order dependant and showed how it can lead to highly varied
+            results in high-dimensional settings. In PC-Stable
+            algorithm~\cite{colombo2014order}, the main difference lies in when the
+            edges are deleted. For a step in the elimination heuristic of the original
+            PC algorithm, we record which edge needs to be removed and remove it only
+            when we proceed to the next level of sets to be conditioned on. Not only it
+            makes the process order indpendent but also allows for each step to be
+            parallelized, thereby improving runtime. The Parallel-PC
+            algorithm~\cite{le2016fast} exploits this caveat, but also keeps track that
+            independence tests for a particular edge should always go to the same core.
+            The authors were able to see an almost linear decrease in runtime with the
+            number of cores when tested across different gene-expression datasets.   
+        \end{pssubsection}
+
+    \end{psubsection}
+    
+    \begin{psubsection}{\textbf{Scoring Based Algorithms}}
+        The major difference here is to use a fitting score like Bayesian Information
+        Criterion (BIC)~\cite{claeskens2008model} instead of conditional independence
+        tests used in the Constraint based algorithms. 
+        \begin{equation}
+            BIC(\vec{X}, G') = \log P(\vec{X} \vert \hat{\vec{U}}, G') -
+            \frac{M(G')}{2}\log(n)
+        \end{equation}
+    
+        where $M(G')$ represents the number of parameters estimated in the model,
+        $\hat{\vec{U}}$ represents the MLE of the parameters, and $n$ represents the
+        sample size of the data, which would then ultimately pick the graph with the
+        highest likelihood over the data. Note that process can also proceed in a
+        Bayesian fashion, where we can define priors over the graph structure and use
+        posteriors to get the scores. Note that the search happens over all possible
+        graphs which is still infeasible. 
+        \begin{pssubsection}{Greedy Equivalence Search (GES)}
+        GES~\cite{chickering2002optimal} uses the above scoring criteria in the
+        following two phase greedy fashion, 
+        \begin{enumerate}
+            \item We start in an opposite fashion to the PC algorithm with a completely
+                empty graph. 
+            \item It then proceeds to add edges in the graph one by one in a greedy
+                fashion, where BIC score is considered between the different models and
+                choose the best one. The DAG is then mapped to the MEC before proceeding
+                to adding the next edge. 
+            \item Once all additions have taken place, the algorithms starts to delete
+                the edges to arrive at the model with the maximum BIC score. 
+        \end{enumerate}
+        \end{pssubsection}
+        We can also use conjunction of Constraint-Based (CB) algorithms along with GES
+        to come up with hybrid algorithms, where the skeleton of the graph is learned
+        using the CB algorithms and orientation of edges can be decided in a greedy GES
+        fashion.
+    \end{psubsection}
+    
+    \begin{psubsection}{\textbf{Functional Causal Model Based Methods}}
+        While the above methods succeed in identifying the required MEC, they are held
+        back by a lot of assumptions relating to the causal relation, namely they should
+        be linear and have gaussian or multinomial parameterizations. In this
+        subsection, we will weaken these assumptions and analyze causal discovery. These
+        methods take advantage of the representational form as described in the
+        Structural equations.  
+        
+        \begin{pssubsection}{Linear Non-Gaussian Models}
+            A linear causal model can be written in the following fashion,
+            \begin{equation}
+                x_i = \sum_{j \neq i} a_j x_j + u_i
+            \end{equation}
+            where $u_i \sim \text{non-Gaussian}$. As~\cite{eberhardt2017introduction}
+            explains, the above model forgoes assumptions not only about the gaussian
+            parameterization, but also faithfulness. The author also lays out the
+            argument for the two variable case, where the causal effect orientation is
+            identifiable due to the Darmois-Skitovich theorem. It is noticed that if we
+            \textit{accidentally} assume the wrong direction for the causal effect and
+            proceed to establish independences, we would easily be able to identify the
+            mistake and correct the orientation. Such class of models are called
+            LiNGAM.%
+            
+            Estimating such models from the observational data makes use of the
+            Independent Component Analysis (ICA) algorithm. We can represent the above
+            set of structural equations in the following form,
+            \begin{equation}
+                \quad \quad \vec{X} = \vec{A}\vec{X} + \vec{E}
+            \end{equation}
+            \begin{equation}
+                \implies \vec{E} = (\vec{I} - \vec{A})\vec{X}
+            \end{equation}
+            where, $\vec{E}$ represents the individual noise terms for each variable,
+            which are assumed to be independent of each other and $\vec{X}$ represents
+            the variables and $\vec{A}$ forms the matrix of coefficients.  \\
+            Thus, we first use ICA to decompose the observational data matrix $\vec{D}$
+            as follows, where $C$ represents the factor which has the independent
+            components. 
+            \begin{equation}
+                \vec{D} = \vec{C}\vec{X}
+            \end{equation}
+            As laid out in~\cite{guo2018survey}, the goal to then estimate $\vec{A}$,
+            then follows by first deriving an initial estimate as $\vec{I} - \vec{C}$.
+            Then row permutations are applied on that to achieve a lower triangle matrix
+            which represents the final estimate. 
+        
+        \end{pssubsection}
+        
+        \begin{pssubsection}{Non-Linear Additive Noise Models}
+            The structural equations for non-linear additive noise models can be
+            represented as follows~\cite{eberhardt2017introduction},
+            \begin{equation}
+                x_j = f_j (pa(x_j)) +  u_j
+            \end{equation}
+            where $u_j \sim N(0, \sigma_j^2)$. The conditions for the above scenario
+            have been established by \citet{peters2014causal}. They define a
+            term called \textit{causal minimality} and show the conditions on the
+            observational distribution $\Pr(\vec{V})$ and on functions $f_j$ to
+            correctly identify the causal graph.
+            \begin{definition}[\textbf{Causal Minimality}] The joint distribution
+                induced by the SCM $\Pr(\vec{V})$ satisfies causal minimality if the
+                functions in the structural equations $f_j$ are not constant in any of
+                their arguments, i.e 
+            \begin{equation}
+                \forall\, j \,, \,i  \in pa(x_j) \,\, \exists\, \vec{x}_{pa_{x_j}
+                \setminus \{i\}},\,  x_i \neq x_i^{'} \quad f_j(\vec{x}_{pa_{x_j}
+            \setminus \{i\}}, x_i) \neq f_j(\vec{x}_{pa_{x_j} \setminus \{i\}}, x_i^{'}) 
+            \end{equation}
+            \end{definition}
+            
+            \begin{theorem} Let $\Pr(\vec{V})$ be generated by a non-linear additive
+                noise model, with a causal graph $G$, which satisfies the causal
+                minimality condition, then $G$ is identifiable from the joint
+                observational distribution.  
+            \end{theorem}
+            Later, Mooji et al~\cite{stegle2010probabilistic}, also establish a model
+            for orientation of the causal effect in a two variable model. It assumes
+            that the latent variables are continuous along with the Markov condition but
+            allows the model to remain non-parametric while still retaining
+            identifiability. This is a pairwise model where
+            $\Pr(\vec{X})\Pr(\vec{Y}\vert \vec{X})$ and $\Pr(\vec{Y})\Pr(\vec{X}\vert
+            \vec{Y})$ are computed and the edge between X and Y is oriented
+            corresponding to the better fit. For the directon $\vec{X} \rightarrow
+            \vec{Y}$ the prior on $\vec{X}$ is set as a mixture of gaussians and the
+            functional mapping from $\vec{X}$ to $\vec{Y}$ is thus imposed a gaussian
+            process prior. \\
+        In recent literature, we can use a graph neural network to represent the causal
+        mechanism among the variables. \citet{goudet2018learning} propose the same, and
+        use Causal Graph Neural Networks (CGNN) to identify the cause-effect
+        relationship, identifying conditional independences and orienting edges within
+        a graph. The causal mechanism in the form of 1 hidden-layer neural networks can
+        be represented as follows,
+        \begin{equation}
+            x_i = \sum_{j=1}^{n_h} w^i_k \sigma\left(\sum_{k \in pa(x_i)} w^i_{kj} x_k +
+            w^i_j u_i + b^i_j\right) + b^i
+        \end{equation}
+        where $n_h$ denote the number of hidden units, $\sigma(\cdot)$ is the activation
+        function and \\ $\set{w^i_k, w^i_{kj}, w^i_j, b^i_j, b^i}$ represent the network
+        parameters. The training of the networks follows from the observational
+        distribution where the loss function used is based on Maximum Mean Discrepancy,
+        which measures the distance between the means of two probability distributions,
+        which would here be the observational distribution and distribution which the
+        current parameters induce. They assume causal markov and faithfulness
+        assumptions to hold and proceed with the structure identification based on
+        scoring methods, by considering each edge in isolation and then use hill
+        climbing approaches to optimize for the overall score. 
+        \end{pssubsection}
+    
+    \end{psubsection}
+    
+    Apart from the above methods, there are ways where you encode all possible
+    information as constraints in propositional logic describing the underlying the
+    causal graph structure. For e.g one way to describe a causal effect is by creating
+    the respective literals as described in~\cite{eberhardt2017introduction}. Thus, the
+    causal discovery problem is transformed as an boolean satisfiability problem and
+    translates the paradigm to a complete optimization based approach. SAT solvers can
+    thus determine the corresponding solutions, and the graph can be reconstructed by
+    using the truth assignments. 
+
+\end{psection}
+
+\begin{psection}[4]{Causal Discovery using Interventions}
+
+    When a human is tasked with understanding the reasoning behind an experiment, she
+    firsts tries to build a reasoning model or a causal model using the observations
+    available for the data. Based on future outcomes upon interventions and experiments,
+    she continually learns and updates her causal model to reflect the new findings.
+    This is the standard cognitive approach to understanding the world. This is usually
+    a long process of experimentation (intervention) and updating the causal model.
+
+    \citet{rottman2012} review multiple experiments which examine how people learn
+    causal relationships. These experiments are based on active learning where each
+    timestep entails sampling of multiple observations under an intervention. The
+    authors claim that such experiments allow the participants to learn rather quicker
+    than just showing differnt observations of the data. Active causal learning takes
+    the same approach with the idea that observing data under intervention could allow
+    us to learn more stable and better causal structures.
+
+    The motivation to use interventional experiments to learn data comes from the fact
+    that it is often difficult to identify direction for all edges in a Markov
+    Equivalence Graph for some observational data. Even though there are methods
+    (discussed in Section \hyperlink{sec:3}{3}) which estimate the direction, these are
+    mostly based on functional heuristics and can often infer incorrect edge directions.
+    Allowing interventional observations, we can better identify the cause and effects
+    and would be able to better identify the exact causal graph.
+
+    The task of learning from interventions, however, is non-trivial. Even though, we
+    as humans can often very expertly perform such tasks, it is difficult to teach a
+    machine to do the same. Consider the following example SCM $\cM$ which hopefully
+    demonstrates the complexity of the task.
+
+    Define an SCM $\cM = \para{\vV, \vU, \cF, P(\vU)}$.
+    \begin{align*}
+        \cM
+        \eq \begin{cases}
+            \vV \eq \set{X, Y, Z} \\
+            \vU \eq \set{U_X, U_Y, U_Z} \\
+            \cF \eq \begin{cases}
+                X \la U_X \\
+                Z \la U_Z \\
+                Y \la \begin{cases}
+                    Z   & \mt{if} X = 0 \\
+                    U_Y & \mt{else}
+                \end{cases}
+            \end{cases} \\
+            P(U_X = 1) \eq P(U_Y = 1) \eq P(U_Z = 1) \eq 0.5
+        \end{cases}
+    \end{align*}
+    where all observed and unobserved variables are binary \ie\
+    $X, Y, Z, U_X, U_Y, U_Z \in \set{0, 1}$.
+
+    In the above SCM, it is clear that $X$ causes $Y$. However, consider an intervention
+    $do(X = 1)$. In this case, the observations would be such that
+    $P(Y = 1 \pipe do(X = 0)) = 0.5$. Therefore, based on this, we might say that $X$
+    does not cause $Y$ since an intervention on $X$ did not change the distribution of
+    $Y$. This is an incorrect implication and, therefore, we need to be careful when
+    identifying effects on intervention. \citet{rottman2012} state 3 rules which allow
+    us to work on building a method for discovering causal structures using
+    interventional data. These rules are stated as follows
+    \begin{enumerate}
+        \item A variable only changes state if it is directly intervened upon, or
+            manipulated in some way, or if a variable that causes it (directly or
+            indirectly) is manipulated. If it is not intervened upon, its state should
+            remain stable.
+
+        \item If a variable X is intervened upon and Y changes state at the same time,
+            then X causes Y. It is unlikely that Y happened to change due to some second
+            unknown factor at the same time as X.
+
+        \item If a variable X is intervened upon and Y does not change state, then X
+            probably does not cause Y. However, X may cause Y, but Y may not change
+            after an intervention on X if Y is already at the state produced by an
+            intervention on X.
+    \end{enumerate}
+
+    Other than the challenge described above, there are additional statistical
+    challenges that are not different from the challenges discussed in the previous
+    section. To find independences between observational and interventional data we have
+    to rely on statistical tests which can infer incorrect results if the data is not
+    sufficient. Moreover, we need to make sure the order of interventions is optimal to
+    ensure the most efficient scheme for causal discovery. We need to address these
+    challenges while designing a scheme to perform active causal discovery.
+
+    \citet{tong2001active} first explored the idea of active learning for the efficient
+    learning of bayesian networks. However, the difference between the objecitve
+    described by \citet{tong2001active} is different from active causal discovery since
+    they were trying to infer the best parameters for the bayesian network which is
+    fixed whereas we wish to find the best causal structure given the data.
+
+    In general, an active causal learning strategy would consist of the following broad
+    steps at each timestep
+    \begin{enumerate}[itemsep=-1pt,topsep=0pt]
+        \item Suppose if the set of causal models in consideration are $\cM$.
+        \item Identify an optimal/random intervention for this timestep $B$.
+        \item Collect data $D$ upon intervening consistent with $B$.
+        \item Update the set of models $\cM$; or more generally the probabilities of
+            each model in $\cM$.
+        \item Repeat until needed.
+    \end{enumerate}
+
+    For any algorithm, there are two steps to consider, finding the optimal intervention
+    and updating the set of models based on an intervention. We formally define these
+    steps with a probabilistic perspective as that allows us to present the idea more
+    generally. Some of the equations and notations have been borrowed from Section 3 of
+    \citep{neil2017} which describes in greater detail the objectives and some standard
+    information theoretic approaches to active learning.
+
+    \begin{description}
+        \item[Choosing an Intervention]
+            Choosing the best intervention is important when each experiment is
+            expensive and entails much more time or resources than choosing the best
+            intervention itself.
+
+            The task of choosing an intervention, however, is non-trivial. Not only is
+            choosing the best intervention a difficult and generally an intractable
+            problem, it is also difficult to quantify the utility value itself.
+            Different approaches use differnt notions of utility or gain in choosing an
+            intervention (discussed in more detail later).
+
+            Suppose if we have a model (or SCM) $M \in \cM$ which defines the causal
+            graph and assumes a non-parameteric form of the functionals between
+            different variables. Suppose if we define the set of interventions as $\cB$,
+            then we choose the best intervention $b^\ast$ as
+            \begin{equation}
+                b^\ast \eq \argmax_{b \in \cB} \E[\vd \in D_b]{\tfunc{Gain}{M \pipe \vd, b}}
+            \end{equation}
+            where $D_b$ represents the samples generated upon intervention $b$ and the
+            function Gain is the utility gain for a model given the sample $\vd$ and
+            intervention $b$.
+
+        \item[Causal models inference] 
+            We refer to the updating of the models set as inference. For any model
+            $M \in \cM$, we update the probability of $M$ (posterior) as follows
+            \begin{align*}
+                \prob{M \pipe D_b, b} \qprop \prob{D_b \pipe M, b} \prob{M}
+            \end{align*}
+            
+            We use this idea to update the probabilities for the set $\cM$ with the
+            prior being the posterior computed from the previous timesteps. In case
+            of non-bayesian approaches, the posterior over the set $\cM$ is only
+            non-zero for models which are part of the updated model set $\cM$ and is
+            uniform.
+
+    \end{description}
+
+    \begin{psubsection}{Constraint Based Active Causal Learning}
+    
+        Following the general algorithm for causal discovery, we now review some
+        approaches to active causal discovery. One of the earlier attempts to discover
+        causal structure using active learning was made in \citep{he2008active}. The
+        main contribution by \citet{he2008active} was to show that the learning of the
+        causal structure can be broken down into individually learning chain components
+        which are cordal undirected graphs. We provide a summary of the main
+        contributions in their work followed by some criticism of the opted approach.
+        
+        \begin{definition}[Chain Component~\cite{he2008active}]
+            Chain component of a graph is a connected undirected graph obtained by
+            removing all directed edges from the chain graph.
+        \end{definition}
+        
+        The chain graph is the PDAG which represents the Markov Equivalence Class of the
+        causal graphs which can be obtained from the observations alone. As mentioned
+        earlier, \citet{he2008active} showed that finding the causal structure of the
+        complete graph is equivalent to finding the causal structure of each chain
+        component individually. However, an additional constraint over each chain
+        component is that the undirected graphs are chordal~\footnote{%
+            An undirected graph is chordal if every cycle of length larger than or equal
+            to 4 has a chord
+        }
+        
+        \begin{description}
+            \item[Interventional Experiment and Updating the Model Class]
+                For any choice of intervention, one \\ variable is chosen for a chain
+                component and the intervention is performed for all values in its
+                domain. These values are randomly assigned to experiments. For each
+                intervention value, we have certain sample data points. The
+                post-intervention independences are then estimated using these sample
+                data points and used to reduce the equivalence class correspondingly.
+        
+                Only the models that fit the updated equivalence class are considered
+                for further experimentation. Note that this is done in a
+                non-probabilistic fashion as we are simply selecting models which fit
+                our updated beliefs.
+        
+            \item[Choosing the intervention] 
+                Even though \citet{he2008active} present different approaches for
+                randomized experimentation as well quasi-experimentation, we exclude the
+                latter from this review, however all criticisms we present are
+                applicable to both.
+        
+                The choice of intervention is made by maximizing entropy which is
+                defined as follows. For some intervention $b \in \cB$, the entropy is
+                defined as
+                \begin{align*}
+                    H_b \eq - \sum_{i = 1}^M \frac{l_i}{L} \log\frac{l_i}{L}
+                \end{align*}
+                where $l_i$ denotes the number of possible DAGs of the chain component
+                with the $i$th orientation among all possible orientations and
+                $L =\sum_{i} l_i$.
+        
+                This ensures that we choose the intervention which would allow us to
+                minimize the variation between different orientations and, therefore,
+                allow us to reduce the most number of models.
+        \end{description}
+        
+        The original work shows detailed examples of the approach along with diagrams of
+        causal graphs and we suggest the reader to go through them for a better
+        understanding of the approach. Before we provide our criticisms, we describe
+        another similar approach for choosing an optimal intervention proposed by
+        \citet{eberhardt2012}. The idea described in \citep{eberhardt2012} only differs
+        in how the optimal intervention is chosen. Instead of finding chain components,
+        all maximal cliques in the graph are identified and the variable which is part
+        of the most number of cliques is chosen for intervention. If there are multiple
+        such variables, then any variable out of these can be chosen randomly or based
+        on domain knowledge (for example we would pick the variable which is easier to
+        manipulate).
+
+        \begin{pssubsection}{Criticism}
+        
+            The first thing to notice is that both the approaches described above are
+            based on constricting the Markov Equivalence Class obtained from a standard
+            causal discovery algorithm such as the PC Algorithm. Despite this being a
+            classic approach, the PC algorithm can be often inefficient at finding
+            skeletons for causal structures. Even though the PC algorithm is complete,
+            given a limited number of samples, the independences obtained from the
+            observations, especially heavily conditioned independences, are innacurate
+            and therefore the MEC obtained is not suitable for the causal structure.
+
+            Moreover, both the experiments require interventional experiments to run for
+            all possible domain values in order to identify the independences. This
+            requires a large number of samples to be obtained for each timestep and
+            therefore is not suitable if the number of domain values for any variable is
+            large or if the variable is continuous.
+
+            For the approach described in \citep{he2008active}, the entropy is computed
+            over all orientations and therefore requires us to iterate over all possible
+            graphs. This can be exponential and therefore extremely slow for even small
+            graphs or chain components. Similarly for the approach in
+            \citep{eberhardt2012}, finding the maximal cliques itself is a NP-hard
+            problem and therefore simply choosing an intervention is non-trivial in both
+            the approaches. In the next subsection, we explore another recently proposed
+            strategy for choosing an intervention which addresses some of these
+            challenges by considering a complete bayesian setting.
+        
+        \end{pssubsection}
+    
+    \end{psubsection}
+
+    \begin{psubsection}{Optimal Intervention with Gaussian Process Networks}
+    
+        As pointed out earlier, a constraint based aproach can often be unsuitable for
+        active causal learning. \citet{kgelgen2019optimal} propose an approach based on
+        finding the optimal intervention for a functional model with each graphical
+        equation modeled using a Gaussian Process. The relationship between each
+        variable $X_i$ and it's causal parents $pa(X_i)$ is represented as an additive
+        noise model (ANM) and is given as follows
+        \begin{equation}
+            X_i \eq f_i(pa(X_i)) + \eps_i
+        \end{equation}
+
+        The above suggests that we are implicitly assuming each variable $X_i$ to be
+        continuous. This is one of the caveats of this approach which is also assumed
+        in our proposed method. We leave the extension to discrete variables as a
+        future step.
+        
+        Assuming a gaussian process network entails that the functions $f_i$ are sampled
+        from a gaussian process. This allows us let the functions be non-parameteric
+        while retaining the nice properties of Gassian processes and, therefore,
+        affording closed form marginals.
+
+        Suppose for a model $M \in \cM$, we represent $\vtheta_M$ as the functional
+        parameters for the corresponding graph structure. For a gaussian process
+        network, these parameters describe the functions between the causal nodes.
+
+        The marginal likelihood probability of the data is then defined as follows
+        \begin{equation}%
+            \label{eq:data_likelihood}
+            \prob{D \pipe M} \eq \int_{\vtheta_M} \prob{D \pipe \vtheta_M, M} \prob{\vtheta_M \pipe M} \id \vtheta_M
+        \end{equation}
+
+        The corresponding posterior over the models in the model class $\cM$ is defined
+        as follows
+        \begin{equation}%
+            \label{eq:model_posterior}    
+            \prob{M \pipe D} \qprop \prob{M} \prob{D \pipe G}
+        \end{equation}
+
+        The advantage of defining the posterior in this manner allows us to leverage
+        even limited samples of data points without the need to find independence
+        constraints which typically require large amounts of data. This idea is
+        similar to score based methods, such as GES which uses the bayesian
+        information criterion to compute the score. The idea, therefore, is to
+        set a higher probability value for causal graphs which on an average
+        explain the observations better. Even though this is not explicitly defined
+        in the work by \citet{kgelgen2019optimal}, we later on extend this to
+        consider interventional data as well.
+
+        The main consideration and contribution of the paper is the proposal of a novel
+        strategy to choose an optimal intervention for continuous variables.
+
+        Suppose if we intervene on the variable $V$ as $do(V = v)$. The measure of an
+        intervention is described by the information theoretic measure of information
+        gain $U$ defined as follows (we represent $\prob{\cd \pipe do(V = v)}$ as
+        $\prob[V = v]{\cd}$)
+        \begin{equation}%
+            \label{eq:utility}
+            U(D_v, do(V = v)) \eq \sum_{M \in \cM} \prob[V = v]{G \pipe D_v} \log{\prob[V = v]{M \pipe D_v}} - \sum_{M \in \cM} \prob{M} \log \prob{M}
+        \end{equation}
+        where $D_v$ represents the data points sampled from the actual intervention
+        distribution. Since the second term in the above equation is constant with
+        respect to the intervention variable, we can disregard it for the maximization
+        problem defined later.
+
+        The utility in Equation~\ref{eq:utility} corresponds to the expected change
+        in entropy for the posterior over the causal models given samples from the
+        intervention distribution. Now we define the maximization problem to choose
+        the optimal intervention. Suppose the set $\cV$ represents the set of variables
+        we can intervene on and let $\cD_V$ represent the domain for the variable $V$.
+        Then, the intervention is chosen based on the following optimization objective
+        \begin{equation}%
+            \label{eq:raw_objective}
+            V^\ast, v^\ast \eq \argmax_{V \in \cV, v \in \cD_V} \int_{\vv_{-V}} U(\vv_{-V}, do(V = v)) \prob[V = v]{\vv_{-V}} \id \vv_{-V}
+        \end{equation}
+        The above objective is based on Bayesian experiment design which is a decision
+        theoretic approach for selecting and experiment aiming to maximize a utility
+        function.
+
+        Upon combining Equations~\ref{eq:utility} and~\ref{eq:raw_objective}, the
+        optimization objective decomposes into the following form
+        \begin{equation}%
+            \label{eq:objective}
+            V^\ast, v^\ast \eq \argmax_{V \in \cV, v \in \cD_V} \sum_{M \in \cM} \prob{M} \int_{\vv_{-V}} \prob[V = v]{\vv_{-V} \pipe M} \log \prob[V = v]{M \pipe \vv_{-V}} \id \vv_{-V}
+        \end{equation}
+
+        The integral can be computed using Monte Carlo estimation since sampling from
+        the marginal of a gaussian process network is not
+        difficult~\cite{kgelgen2019optimal} as a closed form solution is available. The
+        probability within the logarithm can be computed using
+        Equation~\ref{eq:model_posterior} by summing over all models in $\cM$.
+
+        Since the optimization objecitve can be highly non-convex, Bayesian Optimization
+        is a suitable strategy to find an optimal intervention.
+
+        Even though this approach is highly desirable since it allows us to choose
+        an optimal intervention for continuous random variables without assuming
+        parameteric functions to model causal effects. However, this approach has its
+        own caveats.
+
+        Firstly, the summation over all graphs is non-optimal as the number of directed
+        acyclic graphs for a set of variabes is super-exponential and therefore we would
+        only be able to compute the information gain and utility for a very small number
+        of variables. Morevoer, this summation is not only done once but for every
+        sample from the causal model, the posterior needs to be computed which would
+        mean that the complexity (assuming everything else to constant) is
+        $\bigO{N \abs{\cM}^2}$ where $N$ is the number of Monte Carlo samples used to
+        estimate the integral and $\abs{\cM}$ is the size of the model class. This is
+        explicitly stated by the authors as a limitation as well.
+
+        Secondly, the paper does not inform on how to update the graph prior as more
+        intervention data is available. We propose to extend the paper in order to
+        address these shortcomings based on graph sampling techniques and bayesian
+        information criterion.
+
+        In the next subsection, we briefly look at techniques which can help us
+        avoid summing over the complete model class and instead sample from a well
+        defined posterior which is based on the observations available with and
+        without interventions. This would allow us to scale up the approach to
+        relatively larger number of variables by computing an estimate of the
+        information gain for each variable and intervention.
+
+    \end{psubsection}
+
+    \begin{psubsection}{Active Causal Structure Learning for Gaussian Process Networks}
+    
+        As discussed earlier, choosing an intervention by summing the information gain
+        over all graphs is nonoptimal as the number of graphs can be super-exponential.
+        Even though it is possible to reduce the search space by limiting the graphs
+        to a smaller class such as the MEC derived using PC algorithm. This could be 
+        a feasible approach if we have large amounts of observations.
+
+        \citet{kgelgen2019optimal} suggest using the approach described in
+        \citep{agrawal2018minimal} to sample graphs. The idea in this sampling approach
+        is to sample orders (variable orders) instead of graphs as it offers better
+        mixing of the MCMC chain~\cite{friedman2001}. This is, however, not optimal for
+        active causal learning. This is because the approach described in
+        \citep{agrawal2018minimal} is based on independences obtained from observations.
+        As described earlier, this is not suitable for interventions, especially with
+        continuous variables as it is difficult to attribute independences from
+        interventional observations.
+
+        Instead we focus on MCMC sampling based on the previous approach described in
+        \citep{friedman2001}. The original graph sampling via MCMC was proposed by
+        \citet{madigan1995}. However the posteriors can be highly peaked at multiple
+        local optimals and therefore the chain mixing is slow~\cite{friedman2001}. In
+        an attempt to remedy this, \citet{friedman2001} proposed a sampling approach
+        based on topological orders of the nodes rather than complete graphs. They
+        reported faster mixing and therefore better chain convergence for this case.
+        For each order, the posterior can be decomposed over the
+        variables~\footnote{This assumes the Markov Condition to be satisfied}.
+
+        We skip the details mentioned in the original work as it is straightforward
+        to extend this approach for our use case. We now formally define our approach in
+        Algorithm \hyperlink{algo:1}{1}.
+
+        \begin{algo}[0.9\textwidth]{Active Causal Discovery with Optimal Intervention Selection}
+        
+            \begin{description}
+                \item[Input]: Observation data $D_O$, Oracle $\cO$ to generate
+                    intervention samples
+
+                \item[Procedure]:
+                    \begin{enumerate}
+                        \item Sample some graphs from the approach described in
+                            \citep{friedman2001} using the data $D_0$ as $\cM_0$.
+                        \item For timestep $t = 0 \dots$, do
+                            \begin{itemize}
+                                \item Find optimal intervention as follows
+                                    \begin{equation}%
+                                        \label{eq:est_objective}
+                                        \argmax_{V \in \cV, v \in \cD_V} \sum_{M \in \cM_t} \int_{\vv_{-V}} \prob[V = v]{\vv_{-V} \pipe M} \log \prob[V = v]{M \pipe \vv_{-V}, D_{0:t}} \id \vv_{-V}
+                                    \end{equation}
+                                    where $D_{0:t}$ represents the data generated in all
+                                    previous timesteps. The log probability can be
+                                    estimated using the same graph samples, however,
+                                    admittedly that would add to the bias of the
+                                    estimate.
+                                \item Sample data for the intervention as $D_{t + 1}$
+                                \item Using the data $D_{0:t+1}$, sample models
+                                    $\cM_{t + 1}$ using the MCMC approach
+                            \end{itemize}
+                    \end{enumerate}
+                    
+            \end{description}
+        
+        \end{algo}
+
+        There are still some things which are not optimal about the algorithm. The first
+        is that for each timestep and for each sampling step, the probability over the
+        complete data distribution is needed to be computed which could be potentially
+        slow. Since we are only sampling an order and marginalizing over the actual
+        graph, we still have an overhead of exponential steps, although this is much
+        more controlled and can be potentially reduced using domain
+        knowledge~\cite{friedman2001}.
+
+        Using the same approach, it is not trivial to include discrete variables. We
+        hope to look into this in more detail in the future.
+
+        Another extension that could be viable is to look into chain components instead
+        of the complete graph. That would allow us to run simultaneous interventions and
+        potentially reduce the number of timesteps as well as improve convergence.
+        Multiple interventions is not possible at the moment since we are using Bayesian
+        Optimization over a single objective. Looking at chain components would also
+        allow us to run the optimization strategy independently and parallelly over
+        the chain components to find optimal interventions for each chain component.
+
+        One major drawback of all of the active learning methods we discussed is that
+        none of these suppose latent variables. This makes the approach much less
+        likely to be applicable in widespread domains since ubobserved confounders are
+        very common in real world experiments. Another challenge would be to address
+        missing data. We can look into marginalizing the data over missing variables
+        however given the high complexity of the approach already, this might not be
+        optimal.
+
+        The above mentioned challenges are some of the problems we hope to look into in
+        the future and further extend the approach to wider applications.
+    
+    \end{psubsection}
+
+\end{psection}
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}
